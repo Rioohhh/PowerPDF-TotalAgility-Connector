@@ -1,8 +1,6 @@
-using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.Drawing;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -13,22 +11,14 @@ namespace PPDF.TotalAgility.Connector
     /// Configuration control hosted inside Power PDF's
     /// File -> Options -> Connectors -> TotalAgility panel.
     ///
-    /// Layout: SDK URL, Auth Type, Credentials (context), Connect, Confirmation checkbox, Save.
+    /// Layout: Environment (connection) dropdown + name, SDK URL, Auth Type, Credentials (context),
+    /// Connect, Confirmation checkbox, Save.
+    /// Each connection (e.g. a customer environment) has its own URL, credentials and document types.
+    /// The selected connection is the one the Send button uses.
     /// Process and Variables are configured via the Configure ribbon button.
     /// </summary>
     public partial class ConfigurationControl : UserControl
     {
-        #region Registry Constants
-        private const string REG_KEY = @"Software\ScanSoft\Connectors\TotalAgility";
-        private const string TA_SDK_URL = "TA_SDK_URL";
-        private const string TA_USER_ID = "TA_USER_ID";
-        private const string TA_PASSWORD = "TA_PASSWORD";
-        private const string TA_SESSION_ID = "TA_SESSION_ID";
-        private const string TA_SHOW_CONFIRMATION = "TA_SHOW_CONFIRMATION";
-        private const string TA_AUTH_TYPE = "TA_AUTH_TYPE";
-        private const string TA_WINDOWS_USERNAME = "TA_WINDOWS_USERNAME";
-        #endregion
-
         #region Auth Type Constants
         private const int AUTH_STANDARD = 0;
         private const int AUTH_WINDOWS = 1;
@@ -38,7 +28,9 @@ namespace PPDF.TotalAgility.Connector
         #region State
         private Connector m_conn;
         private TotalAgilityService _taService;
-        private string _sessionId;
+        private List<TAConnection> _connections = new List<TAConnection>();
+        private TAConnection _current;
+        private bool _loading;
         private ToolTip _toolTip = new ToolTip();
         #endregion
 
@@ -105,78 +97,180 @@ namespace PPDF.TotalAgility.Connector
             GetSheet((IntPtr)hWnd);
         #endregion
 
-        #region Registry Helpers
-        private void SaveEncryptedSetting(string key, string value)
-        {
-            byte[] enc = ProtectedData.Protect(
-                Encoding.UTF8.GetBytes(value), null,
-                DataProtectionScope.CurrentUser);
-            using (RegistryKey rk = Registry.CurrentUser.CreateSubKey(REG_KEY))
-                rk.SetValue(key, Convert.ToBase64String(enc), RegistryValueKind.String);
-        }
-
-        private string LoadEncryptedSetting(string key)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.OpenSubKey(REG_KEY))
-            {
-                if (rk == null) return "";
-                string b64 = rk.GetValue(key, "") as string;
-                if (string.IsNullOrEmpty(b64)) return "";
-                try
-                {
-                    byte[] dec = ProtectedData.Unprotect(
-                        Convert.FromBase64String(b64), null,
-                        DataProtectionScope.CurrentUser);
-                    return Encoding.UTF8.GetString(dec);
-                }
-                catch { return ""; }
-            }
-        }
-
-        private void SavePlainSetting(string key, string value)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.CreateSubKey(REG_KEY))
-                rk.SetValue(key, value ?? "", RegistryValueKind.String);
-        }
-
-        private string LoadPlainSetting(string key)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.OpenSubKey(REG_KEY))
-            {
-                if (rk == null) return "";
-                return rk.GetValue(key, "") as string ?? "";
-            }
-        }
-        #endregion
-
         #region Form Load
         private void ConfigurationControl_Load(object sender, EventArgs e)
         {
             try
             {
-                textBoxSdkUrl.Text = LoadPlainSetting(TA_SDK_URL);
-                textBoxUserId.Text = LoadEncryptedSetting(TA_USER_ID);
-                textBoxPassword.Text = LoadEncryptedSetting(TA_PASSWORD);
+                _connections = ConnectionStore.Load();
+                _current = ConnectionStore.GetActive(_connections);
 
-                string authTypeStr = LoadPlainSetting(TA_AUTH_TYPE);
-                int authType = string.IsNullOrEmpty(authTypeStr)
-                    ? AUTH_STANDARD : int.Parse(authTypeStr);
+                RefreshConnectionCombo(_current);
+                ShowConnection(_current);
 
-                if (authType == AUTH_WINDOWS) radioButtonWindowsAD.Checked = true;
-                else if (authType == AUTH_FEDERATED) radioButtonFederated.Checked = true;
-                else radioButtonStandard.Checked = true;
+                checkBoxShowConfirmation.Checked = ConnectionStore.ShowConfirmation;
 
-                string confFlag = LoadPlainSetting(TA_SHOW_CONFIRMATION);
-                checkBoxShowConfirmation.Checked = confFlag != "0";
-
-                ShowAuthFields(authType);
-                AutoConnect(authType);
+                AutoConnect(_current);
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Failed to load settings: " + ex.Message,
                     "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+        #endregion
+
+        #region Connections — dropdown, name, New, Delete
+        private void RefreshConnectionCombo(TAConnection select)
+        {
+            _loading = true;
+            try
+            {
+                comboBoxConnection.Items.Clear();
+                foreach (var c in _connections)
+                    comboBoxConnection.Items.Add(c);
+                comboBoxConnection.SelectedItem = select;
+                buttonDeleteConnection.Enabled = _connections.Count > 1;
+            }
+            finally
+            {
+                _loading = false;
+            }
+        }
+
+        /// <summary>Puts a connection's settings into the fields.</summary>
+        private void ShowConnection(TAConnection c)
+        {
+            _loading = true;
+            try
+            {
+                textBoxConnName.Text = c.Name;
+                textBoxSdkUrl.Text = c.SdkUrl;
+                textBoxUserId.Text = c.UserId;
+                textBoxPassword.Text = c.Password;
+
+                if (c.AuthType == AUTH_WINDOWS) radioButtonWindowsAD.Checked = true;
+                else if (c.AuthType == AUTH_FEDERATED) radioButtonFederated.Checked = true;
+                else radioButtonStandard.Checked = true;
+
+                ShowAuthFields(c.AuthType);
+
+                ClearFieldError(textBoxSdkUrl);
+                ClearFieldError(textBoxUserId);
+                ClearFieldError(textBoxPassword);
+            }
+            finally
+            {
+                _loading = false;
+            }
+        }
+
+        private int SelectedAuthType()
+        {
+            return radioButtonWindowsAD.Checked ? AUTH_WINDOWS
+                 : radioButtonFederated.Checked ? AUTH_FEDERATED
+                 : AUTH_STANDARD;
+        }
+
+        /// <summary>Copies the fields back into the connection that is being shown.</summary>
+        private void CommitCurrent()
+        {
+            if (_current == null) return;
+
+            _current.Name = textBoxConnName.Text.Trim();
+            _current.SdkUrl = textBoxSdkUrl.Text.Trim();
+            _current.AuthType = SelectedAuthType();
+            _current.UserId = textBoxUserId.Text.Trim();
+            _current.Password = textBoxPassword.Text.Trim();
+            if (_current.AuthType == AUTH_WINDOWS)
+                _current.WindowsUsername = textBoxWindowsUser.Text;
+        }
+
+        private string NewConnectionName()
+        {
+            const string baseName = "New connection";
+            string name = baseName;
+            int n = 2;
+            while (FindByName(name, null) != null)
+                name = baseName + " " + n++;
+            return name;
+        }
+
+        private TAConnection FindByName(string name, TAConnection except)
+        {
+            foreach (var c in _connections)
+                if (!ReferenceEquals(c, except) &&
+                    string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return c;
+            return null;
+        }
+
+        private void comboBoxConnection_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (_loading) return;
+
+            var target = comboBoxConnection.SelectedItem as TAConnection;
+            if (target == null || ReferenceEquals(target, _current)) return;
+
+            CommitCurrent();
+            _current = target;
+            ShowConnection(_current);
+
+            // Switching to a connection that is already saved takes effect at once, so the
+            // Send button uses it. A connection that was just created becomes active on Save.
+            if (ConnectionStore.Get(_current.Id) != null)
+                ConnectionStore.SetActive(_current.Id);
+        }
+
+        private void textBoxConnName_TextChanged(object sender, EventArgs e)
+        {
+            if (_loading || _current == null) return;
+
+            _current.Name = textBoxConnName.Text.Trim();
+
+            // Show the new name in the dropdown
+            int idx = comboBoxConnection.Items.IndexOf(_current);
+            if (idx < 0) return;
+            _loading = true;
+            try
+            {
+                comboBoxConnection.Items[idx] = _current;
+                comboBoxConnection.SelectedIndex = idx;
+            }
+            finally
+            {
+                _loading = false;
+            }
+        }
+
+        private void buttonNewConnection_Click(object sender, EventArgs e)
+        {
+            CommitCurrent();
+
+            var c = new TAConnection { Name = NewConnectionName() };
+            _connections.Add(c);
+            _current = c;
+            RefreshConnectionCombo(c);
+            ShowConnection(c);
+            textBoxConnName.Focus();
+            textBoxConnName.SelectAll();
+        }
+
+        private void buttonDeleteConnection_Click(object sender, EventArgs e)
+        {
+            if (_current == null || _connections.Count <= 1) return;
+
+            DialogResult confirm = MessageBox.Show(
+                "Delete the connection \"" + _current.Name + "\" including its document types " +
+                "and saved credentials?\n\nThis is applied when you click Save.",
+                "TotalAgility", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes) return;
+
+            int idx = _connections.IndexOf(_current);
+            _connections.Remove(_current);
+            _current = _connections[Math.Min(idx, _connections.Count - 1)];
+            RefreshConnectionCombo(_current);
+            ShowConnection(_current);
         }
         #endregion
 
@@ -213,31 +307,28 @@ namespace PPDF.TotalAgility.Connector
         #endregion
 
         #region Auto Connect
-        private void AutoConnect(int authType)
+        private void AutoConnect(TAConnection c)
         {
-            string sdkUrl = LoadPlainSetting(TA_SDK_URL);
-            if (string.IsNullOrEmpty(sdkUrl)) return;
+            if (string.IsNullOrEmpty(c.SdkUrl)) return;
 
             try
             {
                 Cursor = Cursors.WaitCursor;
-                _taService = new TotalAgilityService(sdkUrl);
+                _taService = new TotalAgilityService(c.SdkUrl);
 
-                if (authType == AUTH_STANDARD)
+                if (c.AuthType == AUTH_STANDARD)
                 {
-                    string userId = LoadEncryptedSetting(TA_USER_ID);
-                    string password = LoadEncryptedSetting(TA_PASSWORD);
-                    if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(password))
+                    if (string.IsNullOrEmpty(c.UserId) || string.IsNullOrEmpty(c.Password))
                         return;
-                    TASession session = _taService.LogOn(userId, password);
-                    _sessionId = session.SessionId;
-                    SavePlainSetting(TA_SESSION_ID, _sessionId);
+                    TASession session = _taService.LogOn(c.UserId, c.Password);
+                    c.SessionId = session.SessionId;
+                    ConnectionStore.SaveSession(c);
                 }
-                else if (authType == AUTH_WINDOWS)
+                else if (c.AuthType == AUTH_WINDOWS)
                 {
                     TASession session = _taService.LogOnWithWindowsAD(Environment.UserName);
-                    _sessionId = session.SessionId;
-                    SavePlainSetting(TA_SESSION_ID, _sessionId);
+                    c.SessionId = session.SessionId;
+                    ConnectionStore.SaveSession(c);
                 }
                 // Federated — do not auto-connect, requires browser interaction
             }
@@ -255,9 +346,7 @@ namespace PPDF.TotalAgility.Connector
                 return;
             }
 
-            int authType = radioButtonWindowsAD.Checked ? AUTH_WINDOWS
-                         : radioButtonFederated.Checked ? AUTH_FEDERATED
-                         : AUTH_STANDARD;
+            int authType = SelectedAuthType();
 
             if (authType == AUTH_STANDARD)
             {
@@ -267,6 +356,9 @@ namespace PPDF.TotalAgility.Connector
                 { ShowFieldError(textBoxPassword, "Please enter the Password."); return; }
             }
 
+            // The connection this click was made for, even if the dropdown changes meanwhile
+            TAConnection target = _current;
+
             try
             {
                 Cursor = Cursors.WaitCursor;
@@ -275,6 +367,7 @@ namespace PPDF.TotalAgility.Connector
 
                 string sdkUrl = textBoxSdkUrl.Text.Trim();
                 _taService = new TotalAgilityService(sdkUrl);
+                TotalAgilityService service = _taService;
                 TASession session = null;
 
                 if (authType == AUTH_STANDARD)
@@ -285,16 +378,16 @@ namespace PPDF.TotalAgility.Connector
                     ClearFieldError(textBoxPassword);
 
                     // Run on background thread — keeps UI responsive
-                    session = await Task.Run(() => _taService.LogOn(userId, password));
+                    session = await Task.Run(() => service.LogOn(userId, password));
                 }
                 else if (authType == AUTH_WINDOWS)
                 {
                     string winUser = Environment.UserName;
-                    session = await Task.Run(() => _taService.LogOnWithWindowsAD(winUser));
+                    session = await Task.Run(() => service.LogOnWithWindowsAD(winUser));
                 }
                 else if (authType == AUTH_FEDERATED)
                 {
-                    string taBaseUrl = _taService.GetTaBaseUrl(sdkUrl);
+                    string taBaseUrl = service.GetTaBaseUrl(sdkUrl);
                     IntPtr handle = this.Handle;
 
                     // Use TaskCompletionSource so STA thread runs WebView2 browser
@@ -305,7 +398,7 @@ namespace PPDF.TotalAgility.Connector
                     {
                         try
                         {
-                            TASession result = _taService.LogOnWithFederated(
+                            TASession result = service.LogOnWithFederated(
                                 taBaseUrl, new WindowWrapper(handle));
                             tcs.SetResult(result);
                         }
@@ -324,11 +417,11 @@ namespace PPDF.TotalAgility.Connector
                 if (session == null || !session.IsValid)
                     throw new Exception("Authentication failed.");
 
-                _sessionId = session.SessionId;
-                SavePlainSetting(TA_SESSION_ID, _sessionId);
+                target.SessionId = session.SessionId;
+                ConnectionStore.SaveSession(target);
 
                 MessageBox.Show(
-                    $"Connected successfully!\nWelcome, {session.DisplayName}.",
+                    $"Connected successfully to \"{target.Name}\"!\nWelcome, {session.DisplayName}.",
                     "Connected", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
@@ -347,36 +440,40 @@ namespace PPDF.TotalAgility.Connector
         #region Save Button
         private void buttonSave_Click(object sender, EventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(textBoxSdkUrl.Text))
+            CommitCurrent();
+
+            // Check every connection, not just the visible one
+            foreach (var c in _connections)
             {
-                ShowFieldError(textBoxSdkUrl, "SDK URL is required.");
+                string problem = null;
+                if (string.IsNullOrWhiteSpace(c.Name))
+                    problem = "Every connection needs a name.";
+                else if (FindByName(c.Name, c) != null)
+                    problem = "The name \"" + c.Name + "\" is used more than once.";
+                else if (string.IsNullOrWhiteSpace(c.SdkUrl))
+                    problem = "The SDK URL of \"" + c.Name + "\" is required.";
+
+                if (problem == null) continue;
+
+                if (!ReferenceEquals(c, _current))
+                {
+                    _current = c;
+                    RefreshConnectionCombo(c);
+                    ShowConnection(c);
+                }
+                MessageBox.Show(problem, "Validation",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            int authType = radioButtonWindowsAD.Checked ? AUTH_WINDOWS
-                         : radioButtonFederated.Checked ? AUTH_FEDERATED
-                         : AUTH_STANDARD;
-
             try
             {
-                SavePlainSetting(TA_SDK_URL, textBoxSdkUrl.Text.Trim());
-                SavePlainSetting(TA_AUTH_TYPE, authType.ToString());
+                ConnectionStore.SaveAll(_connections);
+                ConnectionStore.SetActive(_current.Id);
+                ConnectionStore.ShowConfirmation = checkBoxShowConfirmation.Checked;
 
-                if (authType == AUTH_STANDARD)
-                {
-                    SaveEncryptedSetting(TA_USER_ID, textBoxUserId.Text.Trim());
-                    SaveEncryptedSetting(TA_PASSWORD, textBoxPassword.Text.Trim());
-                }
-                else if (authType == AUTH_WINDOWS)
-                {
-                    SavePlainSetting(TA_WINDOWS_USERNAME, textBoxWindowsUser.Text);
-                }
-                // Federated — SessionId already saved by Connect
-
-                SavePlainSetting(TA_SHOW_CONFIRMATION,
-                    checkBoxShowConfirmation.Checked ? "1" : "0");
-
-                MessageBox.Show("Settings saved successfully.",
+                MessageBox.Show(
+                    "Settings saved successfully.\n\nActive connection: " + _current.Name,
                     "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)

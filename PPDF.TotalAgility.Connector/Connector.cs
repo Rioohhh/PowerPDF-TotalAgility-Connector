@@ -50,16 +50,6 @@ namespace PPDF.TotalAgility.Connector
             }
         }
 
-        // ── Registry Constants ────────────────────────────────────────────
-        private const string REG_KEY = @"Software\ScanSoft\Connectors\TotalAgility";
-        private const string TA_SDK_URL = "TA_SDK_URL";
-        private const string TA_USER_ID = "TA_USER_ID";
-        private const string TA_PASSWORD = "TA_PASSWORD";
-        private const string TA_SESSION_ID = "TA_SESSION_ID";
-        private const string TA_SHOW_CONFIRMATION = "TA_SHOW_CONFIRMATION";
-        private const string TA_AUTH_TYPE = "TA_AUTH_TYPE";
-        private const string TA_WINDOWS_USERNAME = "TA_WINDOWS_USERNAME";
-
         // ── Auth Type Constants ───────────────────────────────────────────
         private const int AUTH_STANDARD = 0;
         private const int AUTH_WINDOWS = 1;
@@ -167,14 +157,13 @@ namespace PPDF.TotalAgility.Connector
         string IDMSConnector.DocAddNew(string sourceFile, string title, string[] docProperties)
         {
             // ── Step 1: Load configuration ────────────────────────────
-            string sdkUrl = LoadPlainSetting(TA_SDK_URL);
+            List<TAConnection> connections = ConnectionStore.Load();
+            TAConnection conn = ConnectionStore.GetActive(connections);
 
-            string authTypeStr = LoadPlainSetting(TA_AUTH_TYPE);
-            int authType = string.IsNullOrEmpty(authTypeStr)
-                ? AUTH_STANDARD : int.Parse(authTypeStr);
-
-            string userId = LoadEncryptedSetting(TA_USER_ID);
-            string password = LoadEncryptedSetting(TA_PASSWORD);
+            string sdkUrl = conn.SdkUrl;
+            int authType = conn.AuthType;
+            string userId = conn.UserId;
+            string password = conn.Password;
 
             // ── Step 2: Resolve document name ─────────────────────────
             string documentName = string.IsNullOrEmpty(title)
@@ -182,16 +171,27 @@ namespace PPDF.TotalAgility.Connector
                 : title;
 
             // ── Step 3: Read show confirmation flag (default ON) ───────
-            string showConfFlag = LoadPlainSetting(TA_SHOW_CONFIRMATION);
-            bool showConfirmation = showConfFlag != "0";
+            bool showConfirmation = ConnectionStore.ShowConfirmation;
 
             // ── Step 4: Choose the profile (document type → process) ───
-            List<TAProfile> profiles = ProfileStore.Load();
+            List<TAProfile> profiles = conn.Profiles;
 
-            if (string.IsNullOrEmpty(sdkUrl) || profiles.Count == 0)
+            if (string.IsNullOrEmpty(sdkUrl))
             {
                 MessageBox.Show(
-                    "No document type has been configured.\n\n" +
+                    "No TotalAgility connection has been configured.\n\n" +
+                    "Please enter the SDK URL and credentials under " +
+                    "File \u2192 Options \u2192 Connectors \u2192 TotalAgility.",
+                    "Connection Not Configured",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return "";
+            }
+
+            if (profiles.Count == 0)
+            {
+                MessageBox.Show(
+                    "No document type has been configured for \"" + conn.Name + "\".\n\n" +
                     "Please click the Configure button in the TotalAgility ribbon " +
                     "to add a document type and select its process before sending.",
                     "Process Not Configured",
@@ -202,16 +202,17 @@ namespace PPDF.TotalAgility.Connector
 
             TAProfile profile;
 
-            // A single profile with the confirmation switched off sends straight away;
-            // with several profiles the user always has to say which document type it is.
-            if (profiles.Count == 1 && !showConfirmation)
+            // Only a single connection with a single profile and the confirmation switched off
+            // sends straight away. With several connections the dialog always shows which
+            // environment the PDF goes to; with several profiles the user picks the document type.
+            bool singleConnection = connections.Count == 1;
+            if (singleConnection && profiles.Count == 1 && !showConfirmation)
             {
                 profile = profiles[0];
             }
             else
             {
-                using (var chooser = new SendProfileForm(
-                    documentName, profiles, ProfileStore.GetLastUsedName()))
+                using (var chooser = new SendProfileForm(documentName, conn, singleConnection))
                 {
                     chooser.ShowDialog(new WindowWrapper(_parentWindow));
 
@@ -220,16 +221,16 @@ namespace PPDF.TotalAgility.Connector
 
                     profile = chooser.SelectedProfile;
 
-                    if (profiles.Count == 1)
-                        SavePlainSetting(TA_SHOW_CONFIRMATION,
-                            chooser.DoNotShowAgain ? "0" : "1");
+                    if (singleConnection && profiles.Count == 1)
+                        ConnectionStore.ShowConfirmation = !chooser.DoNotShowAgain;
                 }
             }
 
-            ProfileStore.SetLastUsedName(profile.Name);
+            ConnectionStore.SetLastProfile(conn.Id, profile.Name);
 
             string processId = profile.ProcessId;
             string processName = profile.ProcessName;
+            string processLabel = processName + " (" + conn.Name + ")";
             List<TAInputVariable> inputVariables =
                 profile.Variables ?? new List<TAInputVariable>();
 
@@ -255,7 +256,7 @@ namespace PPDF.TotalAgility.Connector
 
                 // Try saved SessionId first — skip LogOn if still valid
                 TASession session = null;
-                string savedSessionId = LoadPlainSetting(TA_SESSION_ID);
+                string savedSessionId = conn.SessionId;
 
                 if (!string.IsNullOrEmpty(savedSessionId))
                 {
@@ -284,7 +285,7 @@ namespace PPDF.TotalAgility.Connector
                     }
                     else if (authType == AUTH_WINDOWS)
                     {
-                        string winUser = LoadPlainSetting(TA_WINDOWS_USERNAME);
+                        string winUser = conn.WindowsUsername;
                         if (string.IsNullOrEmpty(winUser))
                             winUser = Environment.UserName;
                         session = taService.LogOnWithWindowsAD(winUser);
@@ -295,7 +296,8 @@ namespace PPDF.TotalAgility.Connector
                         session = taService.LogOnWithFederated(
                             taBaseUrl, new WindowWrapper(_parentWindow));
                     }
-                    SavePlainSetting(TA_SESSION_ID, session.SessionId);
+                    conn.SessionId = session.SessionId;
+                    ConnectionStore.SaveSession(conn);
                 }
 
                 byte[] pdfBytes = File.ReadAllBytes(sourceFile);
@@ -313,6 +315,7 @@ namespace PPDF.TotalAgility.Connector
                     inputVariables);
 
                 jobResult.DocumentName = documentName;
+                jobResult.ProcessName = processLabel;
             }
             catch (Exception ex)
             {
@@ -320,7 +323,7 @@ namespace PPDF.TotalAgility.Connector
                 {
                     Success = false,
                     ErrorMessage = ex.Message,
-                    ProcessName = processName,
+                    ProcessName = processLabel,
                     DocumentName = documentName
                 };
             }
@@ -451,40 +454,6 @@ namespace PPDF.TotalAgility.Connector
         void IPropertyPageHandler.UpdateData(int hWnd)
         {
             ConfigurationControl.GetSheet(hWnd)?.UpdateData();
-        }
-
-        // ── Registry Helpers ──────────────────────────────────────────────
-        private string LoadPlainSetting(string key)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.OpenSubKey(REG_KEY))
-            {
-                if (rk == null) return "";
-                return rk.GetValue(key, "") as string ?? "";
-            }
-        }
-
-        private void SavePlainSetting(string key, string value)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.CreateSubKey(REG_KEY))
-                rk.SetValue(key, value ?? "", RegistryValueKind.String);
-        }
-
-        private string LoadEncryptedSetting(string key)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.OpenSubKey(REG_KEY))
-            {
-                if (rk == null) return "";
-                string base64 = rk.GetValue(key, "") as string;
-                if (string.IsNullOrEmpty(base64)) return "";
-                try
-                {
-                    byte[] encrypted = Convert.FromBase64String(base64);
-                    byte[] decrypted = ProtectedData.Unprotect(
-                        encrypted, null, DataProtectionScope.CurrentUser);
-                    return Encoding.UTF8.GetString(decrypted);
-                }
-                catch { return ""; }
-            }
         }
 
         // ── COM Registration Helpers ──────────────────────────────────────

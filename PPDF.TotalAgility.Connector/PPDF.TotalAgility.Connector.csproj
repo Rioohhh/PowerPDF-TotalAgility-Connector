@@ -106,6 +106,7 @@
     <Compile Include="ConfigurationControl.designer.cs">
       <DependentUpon>ConfigurationControl.cs</DependentUpon>
     </Compile>
+    <Compile Include="Connections.cs" />
     <Compile Include="Connector.cs" />
     <Compile Include="Document.cs" />
     <Compile Include="Langs.cs" />

@@ -14,20 +14,14 @@ namespace PPDF.TotalAgility.Connector
 {
     public partial class ProcessSelectionForm : Form
     {
-        private const string REG_KEY = @"Software\ScanSoft\Connectors\TotalAgility";
-        private const string TA_SDK_URL = "TA_SDK_URL";
-        private const string TA_USER_ID = "TA_USER_ID";
-        private const string TA_PASSWORD = "TA_PASSWORD";
-        private const string TA_SESSION_ID = "TA_SESSION_ID";
-        private const string TA_AUTH_TYPE = "TA_AUTH_TYPE";
-        private const string TA_WINDOWS_USERNAME = "TA_WINDOWS_USERNAME";
-
         private const int AUTH_STANDARD = 0;
         private const int AUTH_WINDOWS = 1;
         private const int AUTH_FEDERATED = 2;
 
         private const string DEBUG_LOG = @"C:\Temp\TAConnectorDebug.txt";
 
+        private readonly string _connectionId;
+        private TAConnection _conn;
         private TotalAgilityService _taService;
         private string _sessionId;
         private List<TAProcessIdentity> _allProcesses = new List<TAProcessIdentity>();
@@ -41,9 +35,37 @@ namespace PPDF.TotalAgility.Connector
 
         public TAProfile SavedProfile { get; private set; }
 
-        public ProcessSelectionForm()
+        /// <summary>Edits the document types of the active connection.</summary>
+        public ProcessSelectionForm() : this(null) { }
+
+        /// <summary>Edits the document types of the given connection (null = the active one).</summary>
+        public ProcessSelectionForm(string connectionId)
         {
+            _connectionId = connectionId;
             InitializeComponent();
+        }
+
+        private void LoadConnection()
+        {
+            List<TAConnection> all = ConnectionStore.Load();
+            _conn = null;
+            if (!string.IsNullOrEmpty(_connectionId))
+                foreach (var c in all)
+                    if (c.Id == _connectionId) _conn = c;
+            if (_conn == null) _conn = ConnectionStore.GetActive(all);
+
+            string target = string.IsNullOrEmpty(_conn.Host)
+                ? _conn.Name : _conn.Name + " (" + _conn.Host + ")";
+            labelSectionProfile.Text = "  Document Types \u2014 " + target;
+            Text = "Send to TotalAgility \u2014 " + _conn.Name;
+        }
+
+        private TAProfile FindProfile(string name)
+        {
+            foreach (var p in _profiles)
+                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return p;
+            return null;
         }
 
         private void Log(string msg)
@@ -60,9 +82,10 @@ namespace PPDF.TotalAgility.Connector
         // ── Load ──────────────────────────────────────────────────────
         private async void ProcessSelectionForm_Load(object sender, EventArgs e)
         {
+            LoadConnection();
             LoadProfiles();
 
-            string sdkUrl = LoadPlainSetting(TA_SDK_URL);
+            string sdkUrl = _conn.SdkUrl;
             Log("Load — sdkUrl: " + sdkUrl);
 
             if (string.IsNullOrEmpty(sdkUrl)) return;
@@ -73,7 +96,7 @@ namespace PPDF.TotalAgility.Connector
                 _taService = new TotalAgilityService(sdkUrl);
 
                 // Step 1: Try saved SessionId first
-                string savedSession = LoadPlainSetting(TA_SESSION_ID);
+                string savedSession = _conn.SessionId;
                 Log("Saved SessionId: [" + savedSession + "]");
 
                 if (!string.IsNullOrEmpty(savedSession))
@@ -95,24 +118,22 @@ namespace PPDF.TotalAgility.Connector
                 }
 
                 // Step 2: Re-authenticate based on auth type
-                string authTypeStr = LoadPlainSetting(TA_AUTH_TYPE);
-                int authType = string.IsNullOrEmpty(authTypeStr)
-                    ? AUTH_STANDARD : int.Parse(authTypeStr);
+                int authType = _conn.AuthType;
                 Log("Auth type: " + authType);
 
                 TASession session = null;
 
                 if (authType == AUTH_STANDARD)
                 {
-                    string userId = LoadEncryptedSetting(TA_USER_ID);
-                    string password = LoadEncryptedSetting(TA_PASSWORD);
+                    string userId = _conn.UserId;
+                    string password = _conn.Password;
                     Log("Standard LogOn — userId: " + userId);
                     if (!string.IsNullOrEmpty(userId) && !string.IsNullOrEmpty(password))
                         session = await Task.Run(() => _taService.LogOn(userId, password));
                 }
                 else if (authType == AUTH_WINDOWS)
                 {
-                    string winUser = LoadPlainSetting(TA_WINDOWS_USERNAME);
+                    string winUser = _conn.WindowsUsername;
                     if (string.IsNullOrEmpty(winUser)) winUser = Environment.UserName;
                     Log("Windows AD LogOn — user: " + winUser);
                     session = await Task.Run(() => _taService.LogOnWithWindowsAD(winUser));
@@ -154,7 +175,8 @@ namespace PPDF.TotalAgility.Connector
                 if (session != null && !string.IsNullOrEmpty(session.SessionId))
                 {
                     _sessionId = session.SessionId;
-                    SavePlainSetting(TA_SESSION_ID, _sessionId);
+                    _conn.SessionId = _sessionId;
+                    ConnectionStore.SaveSession(_conn);
                     Log("New SessionId saved. Fetching processes...");
                     List<TAProcessIdentity> procs = await Task.Run(() =>
                         _taService.GetProcesses(_sessionId));
@@ -213,11 +235,11 @@ namespace PPDF.TotalAgility.Connector
         // ── Profiles ──────────────────────────────────────────────────
         private void LoadProfiles()
         {
-            _profiles = ProfileStore.Load();
+            _profiles = _conn.Profiles;
             if (_profiles.Count == 0)
                 _profiles.Add(new TAProfile { Name = NewProfileName() });
 
-            TAProfile last = ProfileStore.Find(_profiles, ProfileStore.GetLastUsedName());
+            TAProfile last = FindProfile(_conn.LastProfile);
             RefreshProfileCombo(last ?? _profiles[0]);
         }
 
@@ -226,7 +248,7 @@ namespace PPDF.TotalAgility.Connector
             const string baseName = "New profile";
             string name = baseName;
             int n = 2;
-            while (ProfileStore.Find(_profiles, name) != null)
+            while (FindProfile(name) != null)
                 name = baseName + " " + n++;
             return name;
         }
@@ -535,8 +557,7 @@ namespace PPDF.TotalAgility.Connector
                 }
             }
 
-            ProfileStore.Save(_profiles);
-            ProfileStore.SetLastUsedName(_current.Name);
+            ConnectionStore.SaveProfiles(_conn.Id, _profiles, _current.Name);
             SavedProfile = _current;
             DialogResult = System.Windows.Forms.DialogResult.OK;
             Close();
@@ -558,38 +579,5 @@ namespace PPDF.TotalAgility.Connector
 
         private void ShowError(string msg) =>
             MessageBox.Show(msg, "TotalAgility", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-
-        private string LoadPlainSetting(string key)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.OpenSubKey(REG_KEY))
-            {
-                if (rk == null) return "";
-                return rk.GetValue(key, "") as string ?? "";
-            }
-        }
-
-        private void SavePlainSetting(string key, string value)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.CreateSubKey(REG_KEY))
-                rk.SetValue(key, value ?? "", RegistryValueKind.String);
-        }
-
-        private string LoadEncryptedSetting(string key)
-        {
-            using (RegistryKey rk = Registry.CurrentUser.OpenSubKey(REG_KEY))
-            {
-                if (rk == null) return "";
-                string b64 = rk.GetValue(key, "") as string;
-                if (string.IsNullOrEmpty(b64)) return "";
-                try
-                {
-                    byte[] dec = ProtectedData.Unprotect(
-                        Convert.FromBase64String(b64), null,
-                        DataProtectionScope.CurrentUser);
-                    return Encoding.UTF8.GetString(dec);
-                }
-                catch { return ""; }
-            }
-        }
     }
 }

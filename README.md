@@ -22,10 +22,11 @@ PowerPDF-TotalAgility-Connector/
 
 ## ✨ Changes in this fork
 
+- **Multiple connections (environments).** Keep several TotalAgility environments, for example one per customer, and pick the one to use from a dropdown under *File → Options → Connectors → TotalAgility*. Every connection has its own SDK URL, login and document types. The **Send** dialog shows a coloured banner with the name and host of the environment the PDF goes to, so you do not send something to the wrong customer.
 - **Document types (profiles).** Instead of one fixed process, you define several profiles, for example *Invoice* → invoice process and *Office supplies request* → office supplies process. Each profile has its own process and its own initialization variable values. When you click **Send to TotalAgility**, you pick the document type and the PDF goes to that process.
 - **TLS 1.2 / 1.3.** Power PDF starts the connector with SSL3/TLS 1.0 only, which Tungsten Cloud rejects ("The underlying connection was closed: An unexpected error occurred on a send"). The connector now enables TLS 1.2, and 1.3 where available.
 - **`install.ps1`** does the whole installation (copy, regasm, ribbon XML, cache) in one go.
-- A single profile created before the upgrade (the old single-process setting) is converted to a profile automatically.
+- Settings of earlier versions (one connection, one process or one list of document types) are converted automatically the first time the new version runs.
 
 ---
 
@@ -163,34 +164,40 @@ Restart Power PDF.
 Every user does this once after installation:
 
 1. Go to **File → Options → Connectors → TotalAgility**
-2. Enter your **TA SDK URL** (e.g. `https://yourtenant.tungstencloud.com/Services/Sdk` or `http://server/TotalAgility/Services/Sdk`)
+2. Under **Environment** you see the connection that is in use. Click **New** for another one, give it a **Name** (for example the customer), and enter its **TA SDK URL** (e.g. `https://yourtenant.tungstencloud.com/Services/Sdk` or `http://server/TotalAgility/Services/Sdk`)
 3. Choose the authentication type and enter your **User ID** and **Password** (*Standard*), then click **Connect**
-4. Click **Configure** in the TotalAgility ribbon to manage the document types:
+4. Click **Save**. The connection that is shown becomes the active one, the one the **Send** button uses
+5. Click **Configure** in the TotalAgility ribbon to manage the document types **of the active connection**:
    - **New** adds a profile; give it a name (for example *Invoice*)
    - Select the **Process** for that profile
    - Fill in the **Initialization Variables** shown for it (every profile keeps its own values)
    - Add more profiles for your other document types, then click **Save**
 
+Document types belong to one connection, because process IDs differ per environment. For each customer you configure its own list.
+
+**Switching environment:** choose another entry in the **Environment** dropdown. A connection that has been saved before becomes active immediately. A connection you just created becomes active when you click **Save**. **Delete** removes the shown connection with its document types and saved credentials (applied on **Save**; the last connection cannot be deleted).
+
 ### Where the settings are stored
 
-Settings are stored per Windows user under `HKEY_CURRENT_USER\Software\ScanSoft\Connectors\TotalAgility`:
+Settings are stored per Windows user:
 
-| Value | Content |
+| Location | Content |
 |---|---|
-| `TA_SDK_URL`, `TA_AUTH_TYPE`, `TA_SHOW_CONFIRMATION` | Plain text |
-| `TA_PROFILES` | The document types as JSON (profile name, process, variable values) |
-| `TA_USER_ID`, `TA_PASSWORD` | Encrypted with the Windows account of the user (DPAPI); **cannot be copied to another user or PC** |
-| `TA_SESSION_ID` | Temporary session, do not copy |
+| `HKCU\Software\ScanSoft\Connectors\TotalAgility` → `TA_CONNECTIONS` | All connections as JSON: name, SDK URL, authentication type and the document types. No credentials |
+| same key → `TA_ACTIVE_CONNECTION`, `TA_SHOW_CONFIRMATION` | The active connection and the confirmation switch |
+| `HKCU\Software\ScanSoft\Connectors\TotalAgilitySecrets` (a *separate* key) | Per connection: user ID and password, **encrypted with the Windows account of the user (DPAPI) and therefore not usable on another user or PC**, and the temporary session |
+
+Values of earlier versions (`TA_SDK_URL`, `TA_USER_ID`, `TA_PASSWORD`, `TA_PROFILES`, ...) stay in the first key after the upgrade but are no longer used. You may delete them.
 
 ### Pre-configuring several PCs
 
-Export the settings on a configured PC:
+Export the connections of a configured PC. Only the first key is exported, so no credentials are included:
 
 ```powershell
 reg export "HKCU\Software\ScanSoft\Connectors\TotalAgility" C:\Temp\ta-settings.reg /y
 ```
 
-Open the `.reg` file in a text editor and **delete the lines `TA_USER_ID`, `TA_PASSWORD` and `TA_SESSION_ID`** before you distribute it. Users then double-click the file (or you push the values with a GPO/Intune script) and only have to enter their own credentials. With *Windows AD* authentication no password is needed.
+Open the `.reg` file in a text editor and **delete the lines `TA_USER_ID`, `TA_PASSWORD` and `TA_SESSION_ID`** if they are present (leftovers of an earlier version). Users then double-click the file (or you push the values with a GPO/Intune script), open Power PDF and only enter their own User ID and Password per environment. With *Windows AD* authentication no password is needed.
 
 ---
 
@@ -198,11 +205,12 @@ Open the `.reg` file in a text editor and **delete the lines `TA_USER_ID`, `TA_P
 
 1. Open a PDF document in Power PDF
 2. Click **Send to TotalAgility** in the Connectors ribbon tab
-3. Choose the document type (profile) and click **Send**. **Manage...** opens the same screen as **Configure**
-4. The connector authenticates, submits the PDF and creates a job on the process of that profile
-5. A result screen shows the **Job ID**, **Process Name**, **Document Name** and **Created At** timestamp
+3. Check the coloured banner at the top: it names the **environment** the PDF will be sent to. If it is not the right one, click **Cancel** and change the environment under *File → Options → Connectors → TotalAgility*
+4. Choose the document type (profile) and click **Send**. **Manage...** opens the same screen as **Configure** for this environment
+5. The connector authenticates, submits the PDF and creates a job on the process of that profile
+6. A result screen shows the **Job ID**, the **Process Name** with the environment in brackets, the **Document Name** and the **Created At** timestamp
 
-If only one profile exists, you can switch off the question with *Do not show this message again* (or the *Show confirmation before sending* option in **File → Options → Connectors → TotalAgility**). With several profiles you are always asked.
+The dialog is only skipped when there is exactly one connection with exactly one document type and the confirmation is switched off (*Do not show this message again*, or *Show confirmation before sending* in the options). With several connections you always see the banner.
 
 ---
 
@@ -215,7 +223,9 @@ If only one profile exists, you can switch off the question with *Do not show th
 | 64-bit registration error | Use `Framework64` regasm for Power PDF 2025 (64-bit) |
 | *Network error … De onderliggende verbinding is gesloten / The underlying connection was closed* | Install this fork's build (TLS 1.2 fix). Older builds only offer TLS 1.0 |
 | Job creation fails | Verify SDK URL, credentials and the process configuration in **Configure** |
-| *No document type has been configured* | Click **Configure**, add a profile and select a process |
+| *No document type has been configured for ...* | Click **Configure**, add a profile and select a process (every connection has its own list) |
+| *No TotalAgility connection has been configured* | Enter the SDK URL and credentials under *File → Options → Connectors → TotalAgility* and click **Save** |
+| Wrong environment in the Send dialog | Choose the right one in the **Environment** dropdown in the options and click **Save** |
 | Newtonsoft.Json not found | Copy `Newtonsoft.Json.dll` to the Connectors folder |
 | Install script says Power PDF is running | Close Power PDF (check Task Manager for `PowerPDF.exe`) and run it again |
 | Debug log | `C:\Temp\TAConnectorDebug.txt` (the folder must exist) |
