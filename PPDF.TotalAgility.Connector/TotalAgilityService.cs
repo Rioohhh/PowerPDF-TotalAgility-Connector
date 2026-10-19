@@ -92,6 +92,16 @@ namespace PPDF.TotalAgility.Connector
         /// e.g. http://server/TotalAgility/Services/Sdk
         /// The trailing slash is stripped to keep URL construction consistent.
         /// </summary>
+        static TotalAgilityService()
+        {
+            // The Power PDF host process defaults to SSL3/TLS 1.0, which TotalAgility
+            // (and Tungsten Cloud) reject. Add TLS 1.2 and, where the framework has it, 1.3.
+            // Numeric values because the enum members are missing from older frameworks.
+            ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
+            try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)12288; }
+            catch (NotSupportedException) { /* TLS 1.3 not available on this system */ }
+        }
+
         public TotalAgilityService(string sdkUrl)
         {
             _sdkUrl = sdkUrl.TrimEnd('/');

@@ -19,9 +19,6 @@ namespace PPDF.TotalAgility.Connector
         private const string TA_USER_ID = "TA_USER_ID";
         private const string TA_PASSWORD = "TA_PASSWORD";
         private const string TA_SESSION_ID = "TA_SESSION_ID";
-        private const string TA_PROCESS_ID = "TA_PROCESS_ID";
-        private const string TA_PROCESS_NAME = "TA_PROCESS_NAME";
-        private const string TA_INIT_VARIABLES = "TA_INIT_VARIABLES";
         private const string TA_AUTH_TYPE = "TA_AUTH_TYPE";
         private const string TA_WINDOWS_USERNAME = "TA_WINDOWS_USERNAME";
 
@@ -38,8 +35,11 @@ namespace PPDF.TotalAgility.Connector
         private Dictionary<string, Control> _varControls = new Dictionary<string, Control>();
         private ToolTip _toolTip = new ToolTip();
 
-        public TAProcessIdentity SavedProcess { get; private set; }
-        public List<TAInputVariable> SavedVariables { get; private set; }
+        private List<TAProfile> _profiles = new List<TAProfile>();
+        private TAProfile _current;
+        private bool _loading;
+
+        public TAProfile SavedProfile { get; private set; }
 
         public ProcessSelectionForm()
         {
@@ -60,6 +60,8 @@ namespace PPDF.TotalAgility.Connector
         // ── Load ──────────────────────────────────────────────────────
         private async void ProcessSelectionForm_Load(object sender, EventArgs e)
         {
+            LoadProfiles();
+
             string sdkUrl = LoadPlainSetting(TA_SDK_URL);
             Log("Load — sdkUrl: " + sdkUrl);
 
@@ -191,25 +193,150 @@ namespace PPDF.TotalAgility.Connector
 
             comboBoxProcess.EndUpdate();
 
-            string savedId = LoadPlainSetting(TA_PROCESS_ID);
-            if (!string.IsNullOrEmpty(savedId))
+            SelectProcessForCurrentProfile();
+        }
+
+        private void SelectProcessForCurrentProfile()
+        {
+            if (_current == null || string.IsNullOrEmpty(_current.ProcessId)) return;
+
+            foreach (TAProcessIdentity item in comboBoxProcess.Items)
             {
-                foreach (TAProcessIdentity item in comboBoxProcess.Items)
+                if (item.Id == _current.ProcessId)
                 {
-                    if (item.Id == savedId)
-                    {
-                        comboBoxProcess.SelectedItem = item;
-                        break;
-                    }
+                    comboBoxProcess.SelectedItem = item;
+                    break;
                 }
             }
+        }
+
+        // ── Profiles ──────────────────────────────────────────────────
+        private void LoadProfiles()
+        {
+            _profiles = ProfileStore.Load();
+            if (_profiles.Count == 0)
+                _profiles.Add(new TAProfile { Name = NewProfileName() });
+
+            TAProfile last = ProfileStore.Find(_profiles, ProfileStore.GetLastUsedName());
+            RefreshProfileCombo(last ?? _profiles[0]);
+        }
+
+        private string NewProfileName()
+        {
+            const string baseName = "New profile";
+            string name = baseName;
+            int n = 2;
+            while (ProfileStore.Find(_profiles, name) != null)
+                name = baseName + " " + n++;
+            return name;
+        }
+
+        private void RefreshProfileCombo(TAProfile select)
+        {
+            _loading = true;
+            try
+            {
+                comboBoxProfile.Items.Clear();
+                foreach (var p in _profiles)
+                    comboBoxProfile.Items.Add(p);
+                comboBoxProfile.SelectedItem = select;
+            }
+            finally
+            {
+                _loading = false;
+            }
+            ShowProfile(select);
+        }
+
+        /// <summary>Loads a profile into the name box, process combo and variables panel.</summary>
+        private void ShowProfile(TAProfile profile)
+        {
+            _current = profile;
+            textBoxProfileName.Text = profile?.Name ?? "";
+            btnDeleteProfile.Enabled = _profiles.Count > 1;
+
+            _loading = true;
+            try
+            {
+                comboBoxProcess.SelectedIndex = -1;
+                comboBoxProcess.Text = "";
+                panelVariables.Controls.Clear();
+                _varControls.Clear();
+                _allVariables = new List<TAInputVariable>();
+                panelVariables.Enabled = false;
+                btnSave.Enabled = false;
+            }
+            finally
+            {
+                _loading = false;
+            }
+
+            SelectProcessForCurrentProfile();
+        }
+
+        /// <summary>Copies what is on screen back into the in-memory current profile.</summary>
+        private void CommitCurrent()
+        {
+            if (_current == null) return;
+
+            _current.Name = textBoxProfileName.Text.Trim();
+
+            TAProcessIdentity process = GetSelectedProcessFromCombo();
+            if (process == null) return;
+
+            _current.ProcessId = process.Id;
+            _current.ProcessName = process.Name;
+            _current.Variables = CollectVariables();
+        }
+
+        private void comboBoxProfile_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (_loading) return;
+
+            var target = comboBoxProfile.SelectedItem as TAProfile;
+            if (target == null || ReferenceEquals(target, _current)) return;
+
+            CommitCurrent();
+            RefreshProfileCombo(target);
+        }
+
+        private void btnNewProfile_Click(object sender, EventArgs e)
+        {
+            CommitCurrent();
+
+            var profile = new TAProfile { Name = NewProfileName() };
+            _profiles.Add(profile);
+            RefreshProfileCombo(profile);
+            textBoxProfileName.Focus();
+            textBoxProfileName.SelectAll();
+        }
+
+        private void btnDeleteProfile_Click(object sender, EventArgs e)
+        {
+            if (_current == null || _profiles.Count <= 1) return;
+
+            DialogResult confirm = MessageBox.Show(
+                $"Delete profile \"{_current.Name}\"?",
+                "TotalAgility", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes) return;
+
+            int idx = _profiles.IndexOf(_current);
+            _profiles.Remove(_current);
+            RefreshProfileCombo(_profiles[Math.Min(idx, _profiles.Count - 1)]);
         }
 
         // ── Process selection ─────────────────────────────────────────
         private void comboBoxProcess_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (_loading) return;
+
             TAProcessIdentity selected = GetSelectedProcessFromCombo();
             if (selected == null || _taService == null) return;
+
+            // A fresh profile is named after the first process picked for it
+            if (_current != null && string.IsNullOrEmpty(_current.ProcessId)
+                && textBoxProfileName.Text.Trim().StartsWith("New profile"))
+                textBoxProfileName.Text = selected.Name;
 
             LoadVariablesForProcess(selected);
         }
@@ -297,18 +424,9 @@ namespace PPDF.TotalAgility.Connector
             _varControls.Clear();
 
             var savedValues = new Dictionary<string, string>();
-            string savedJson = LoadPlainSetting(TA_INIT_VARIABLES);
-            if (!string.IsNullOrEmpty(savedJson))
-            {
-                try
-                {
-                    var saved = JsonConvert.DeserializeObject<List<TAInputVariable>>(savedJson);
-                    if (saved != null)
-                        foreach (var sv in saved)
-                            savedValues[sv.Id] = sv.Value ?? "";
-                }
-                catch { }
-            }
+            if (_current?.Variables != null)
+                foreach (var sv in _current.Variables)
+                    savedValues[sv.Id] = sv.Value ?? "";
 
             const int xLabel = 8, xControl = 180, labelWidth = 168, controlWidth = 220;
             const int rowHeight = 32;
@@ -357,18 +475,9 @@ namespace PPDF.TotalAgility.Connector
         }
 
         // ── Save ──────────────────────────────────────────────────────
-        private void btnSave_Click(object sender, EventArgs e)
+        private List<TAInputVariable> CollectVariables()
         {
-            TAProcessIdentity selectedProcess = GetSelectedProcessFromCombo();
-            if (selectedProcess == null)
-            {
-                ShowError("Please select a valid process before saving.");
-                return;
-            }
-            SavePlainSetting(TA_PROCESS_ID, selectedProcess.Id);
-            SavePlainSetting(TA_PROCESS_NAME, selectedProcess.Name);
-
-            var variablesToSave = new List<TAInputVariable>();
+            var variables = new List<TAInputVariable>();
             foreach (var variable in _allVariables)
             {
                 if (variable.VariableType == TotalAgilityService.VARIABLE_TYPE_DOCUMENT) continue;
@@ -380,7 +489,7 @@ namespace PPDF.TotalAgility.Connector
                         ? chk.Checked.ToString().ToLower()
                         : ((TextBox)ctrl).Text.Trim();
 
-                variablesToSave.Add(new TAInputVariable
+                variables.Add(new TAInputVariable
                 {
                     Id = variable.Id,
                     VariableType = variable.VariableType,
@@ -388,12 +497,56 @@ namespace PPDF.TotalAgility.Connector
                     Value = value
                 });
             }
+            return variables;
+        }
 
-            SavePlainSetting(TA_INIT_VARIABLES, JsonConvert.SerializeObject(variablesToSave));
-            SavedProcess = selectedProcess;
-            SavedVariables = variablesToSave;
+        private void btnSave_Click(object sender, EventArgs e)
+        {
+            if (GetSelectedProcessFromCombo() == null)
+            {
+                ShowError("Please select a valid process before saving.");
+                return;
+            }
+
+            CommitCurrent();
+
+            foreach (var profile in _profiles)
+            {
+                if (string.IsNullOrWhiteSpace(profile.Name))
+                {
+                    ShowProfileError(profile, "Every profile needs a name.");
+                    return;
+                }
+                if (string.IsNullOrEmpty(profile.ProcessId))
+                {
+                    ShowProfileError(profile,
+                        $"Profile \"{profile.Name}\" has no process. Select a process or delete the profile.");
+                    return;
+                }
+                foreach (var other in _profiles)
+                {
+                    if (!ReferenceEquals(other, profile) &&
+                        string.Equals(other.Name, profile.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ShowProfileError(profile,
+                            $"The profile name \"{profile.Name}\" is used more than once.");
+                        return;
+                    }
+                }
+            }
+
+            ProfileStore.Save(_profiles);
+            ProfileStore.SetLastUsedName(_current.Name);
+            SavedProfile = _current;
             DialogResult = System.Windows.Forms.DialogResult.OK;
             Close();
+        }
+
+        private void ShowProfileError(TAProfile profile, string message)
+        {
+            if (!ReferenceEquals(profile, _current))
+                RefreshProfileCombo(profile);
+            ShowError(message);
         }
 
         // ── Cancel ────────────────────────────────────────────────────

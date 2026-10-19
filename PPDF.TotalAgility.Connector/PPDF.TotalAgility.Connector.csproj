@@ -106,13 +106,6 @@
     <Compile Include="ConfigurationControl.designer.cs">
       <DependentUpon>ConfigurationControl.cs</DependentUpon>
     </Compile>
-    <Compile Include="ConfirmationForm.cs">
-      <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="ConfirmationForm_Designer.cs">
-      <DependentUpon>ConfirmationForm.cs</DependentUpon>
-      <SubType>Form</SubType>
-    </Compile>
     <Compile Include="Connector.cs" />
     <Compile Include="Document.cs" />
     <Compile Include="Langs.cs" />
@@ -123,6 +116,7 @@
       <DependentUpon>LoadingForm.cs</DependentUpon>
     </Compile>
     <Compile Include="Menu.cs" />
+    <Compile Include="Profiles.cs" />
     <Compile Include="ProcessSelectionForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -131,6 +125,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="SendProfileForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Resources\Resources.Designer.cs">
       <AutoGen>True</AutoGen>
       <DesignTime>True</DesignTime>
@@ -148,9 +145,6 @@
   <ItemGroup>
     <EmbeddedResource Include="ConfigurationControl.resx">
       <DependentUpon>ConfigurationControl.cs</DependentUpon>
-    </EmbeddedResource>
-    <EmbeddedResource Include="ConfirmationForm.resx">
-      <DependentUpon>ConfirmationForm.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="LoadingForm.resx">
       <DependentUpon>LoadingForm.cs</DependentUpon>

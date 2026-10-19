@@ -56,9 +56,6 @@ namespace PPDF.TotalAgility.Connector
         private const string TA_USER_ID = "TA_USER_ID";
         private const string TA_PASSWORD = "TA_PASSWORD";
         private const string TA_SESSION_ID = "TA_SESSION_ID";
-        private const string TA_PROCESS_ID = "TA_PROCESS_ID";
-        private const string TA_PROCESS_NAME = "TA_PROCESS_NAME";
-        private const string TA_INIT_VARIABLES = "TA_INIT_VARIABLES";
         private const string TA_SHOW_CONFIRMATION = "TA_SHOW_CONFIRMATION";
         private const string TA_AUTH_TYPE = "TA_AUTH_TYPE";
         private const string TA_WINDOWS_USERNAME = "TA_WINDOWS_USERNAME";
@@ -171,9 +168,6 @@ namespace PPDF.TotalAgility.Connector
         {
             // ── Step 1: Load configuration ────────────────────────────
             string sdkUrl = LoadPlainSetting(TA_SDK_URL);
-            string processId = LoadPlainSetting(TA_PROCESS_ID);
-            string processName = LoadPlainSetting(TA_PROCESS_NAME);
-            string initVarsJson = LoadPlainSetting(TA_INIT_VARIABLES);
 
             string authTypeStr = LoadPlainSetting(TA_AUTH_TYPE);
             int authType = string.IsNullOrEmpty(authTypeStr)
@@ -191,90 +185,53 @@ namespace PPDF.TotalAgility.Connector
             string showConfFlag = LoadPlainSetting(TA_SHOW_CONFIRMATION);
             bool showConfirmation = showConfFlag != "0";
 
-            // ── Step 4: Confirmation / process selection flow ──────────
-            bool processConfigured = !string.IsNullOrEmpty(sdkUrl)
-                                  && !string.IsNullOrEmpty(processId);
+            // ── Step 4: Choose the profile (document type → process) ───
+            List<TAProfile> profiles = ProfileStore.Load();
 
-            if (!processConfigured)
+            if (string.IsNullOrEmpty(sdkUrl) || profiles.Count == 0)
             {
                 MessageBox.Show(
-                    "No process has been configured.\n\n" +
+                    "No document type has been configured.\n\n" +
                     "Please click the Configure button in the TotalAgility ribbon " +
-                    "to select a process before sending.",
+                    "to add a document type and select its process before sending.",
                     "Process Not Configured",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 return "";
             }
-            else if (showConfirmation)
-            {
-                bool keepLooping = true;
-                while (keepLooping)
-                {
-                    using (var confForm = new ConfirmationForm(documentName, processName))
-                    {
-                        confForm.ShowDialog(new WindowWrapper(_parentWindow));
 
+            TAProfile profile;
+
+            // A single profile with the confirmation switched off sends straight away;
+            // with several profiles the user always has to say which document type it is.
+            if (profiles.Count == 1 && !showConfirmation)
+            {
+                profile = profiles[0];
+            }
+            else
+            {
+                using (var chooser = new SendProfileForm(
+                    documentName, profiles, ProfileStore.GetLastUsedName()))
+                {
+                    chooser.ShowDialog(new WindowWrapper(_parentWindow));
+
+                    if (chooser.Result != SendProfileForm.SendResult.Send)
+                        return "";
+
+                    profile = chooser.SelectedProfile;
+
+                    if (profiles.Count == 1)
                         SavePlainSetting(TA_SHOW_CONFIRMATION,
-                            confForm.DoNotShowAgain ? "0" : "1");
-
-                        switch (confForm.Result)
-                        {
-                            case ConfirmationForm.ConfirmationResult.Send:
-                                keepLooping = false;
-                                break;
-
-                            case ConfirmationForm.ConfirmationResult.Cancel:
-                                return "";
-
-                            case ConfirmationForm.ConfirmationResult.Change:
-                                bool changeLoop = true;
-                                while (changeLoop)
-                                {
-                                    var psForm = new ProcessSelectionForm();
-                                    DialogResult psResult =
-                                        psForm.ShowDialog(new WindowWrapper(_parentWindow));
-
-                                    if (psResult != DialogResult.OK)
-                                    {
-                                        changeLoop = false;
-                                        break;
-                                    }
-
-                                    processId = LoadPlainSetting(TA_PROCESS_ID);
-                                    processName = LoadPlainSetting(TA_PROCESS_NAME);
-                                    initVarsJson = LoadPlainSetting(TA_INIT_VARIABLES);
-
-                                    DialogResult ready = MessageBox.Show(
-                                        $"Ready to send \"{documentName}\" to process \"{processName}\"?",
-                                        "Send to TotalAgility",
-                                        MessageBoxButtons.YesNo,
-                                        MessageBoxIcon.Question);
-
-                                    if (ready == DialogResult.Yes)
-                                    {
-                                        changeLoop = false;
-                                        keepLooping = false;
-                                    }
-                                }
-                                break;
-                        }
-                    }
+                            chooser.DoNotShowAgain ? "0" : "1");
                 }
             }
 
-            // ── Step 5: Deserialise init variables ────────────────────
-            List<TAInputVariable> inputVariables = new List<TAInputVariable>();
-            if (!string.IsNullOrEmpty(initVarsJson))
-            {
-                try
-                {
-                    inputVariables =
-                        JsonConvert.DeserializeObject<List<TAInputVariable>>(initVarsJson)
-                        ?? new List<TAInputVariable>();
-                }
-                catch { }
-            }
+            ProfileStore.SetLastUsedName(profile.Name);
+
+            string processId = profile.ProcessId;
+            string processName = profile.ProcessName;
+            List<TAInputVariable> inputVariables =
+                profile.Variables ?? new List<TAInputVariable>();
 
             // ── Step 6: Show LoadingForm ───────────────────────────────
             LoadingForm loadingForm = null;
