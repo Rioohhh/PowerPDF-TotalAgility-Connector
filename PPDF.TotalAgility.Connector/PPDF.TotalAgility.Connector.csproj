@@ -108,8 +108,10 @@
     </Compile>
     <Compile Include="Connections.cs" />
     <Compile Include="Connector.cs" />
+    <Compile Include="DebugLog.cs" />
     <Compile Include="Document.cs" />
     <Compile Include="Langs.cs" />
+    <Compile Include="LoadingFormHost.cs" />
     <Compile Include="LoadingForm.cs">
       <SubType>Form</SubType>
     </Compile>

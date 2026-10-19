@@ -18,8 +18,6 @@ namespace PPDF.TotalAgility.Connector
         private const int AUTH_WINDOWS = 1;
         private const int AUTH_FEDERATED = 2;
 
-        private const string DEBUG_LOG = @"C:\Temp\TAConnectorDebug.txt";
-
         private readonly string _connectionId;
         private TAConnection _conn;
         private TotalAgilityService _taService;
@@ -70,13 +68,7 @@ namespace PPDF.TotalAgility.Connector
 
         private void Log(string msg)
         {
-            try
-            {
-                Directory.CreateDirectory(@"C:\Temp");
-                File.AppendAllText(DEBUG_LOG,
-                    DateTime.Now + " | ProcessSelectionForm | " + msg + "\r\n");
-            }
-            catch { }
+            DebugLog.Write("ProcessSelectionForm", msg);
         }
 
         // ── Load ──────────────────────────────────────────────────────
@@ -97,7 +89,7 @@ namespace PPDF.TotalAgility.Connector
 
                 // Step 1: Try saved SessionId first
                 string savedSession = _conn.SessionId;
-                Log("Saved SessionId: [" + savedSession + "]");
+                Log("Saved session: " + (string.IsNullOrEmpty(savedSession) ? "none" : "present"));
 
                 if (!string.IsNullOrEmpty(savedSession))
                 {
@@ -127,7 +119,7 @@ namespace PPDF.TotalAgility.Connector
                 {
                     string userId = _conn.UserId;
                     string password = _conn.Password;
-                    Log("Standard LogOn — userId: " + userId);
+                    Log("Standard LogOn");
                     if (!string.IsNullOrEmpty(userId) && !string.IsNullOrEmpty(password))
                         session = await Task.Run(() => _taService.LogOn(userId, password));
                 }
@@ -135,7 +127,7 @@ namespace PPDF.TotalAgility.Connector
                 {
                     string winUser = _conn.WindowsUsername;
                     if (string.IsNullOrEmpty(winUser)) winUser = Environment.UserName;
-                    Log("Windows AD LogOn — user: " + winUser);
+                    Log("Windows AD LogOn");
                     session = await Task.Run(() => _taService.LogOnWithWindowsAD(winUser));
                 }
                 else if (authType == AUTH_FEDERATED)
@@ -161,7 +153,7 @@ namespace PPDF.TotalAgility.Connector
                     try
                     {
                         session = await tcs.Task;
-                        Log("Federated session: " + (session?.SessionId ?? "NULL"));
+                        Log("Federated session: " + (session == null ? "none" : "received"));
                     }
                     catch (Exception ex)
                     {

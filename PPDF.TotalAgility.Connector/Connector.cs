@@ -129,7 +129,6 @@ namespace PPDF.TotalAgility.Connector
             hIconSmall = item.hIconSmall.ToInt32();
             enabledWithoutDoc = item.enabledWithoutDoc;
 
-            System.IO.File.AppendAllText(@"C:\Temp\TAConnectorDebug.txt", DateTime.Now + " | MenuGetMenuItem: " + "menuItemId=" + menuItemId +  " text=" + text + " hIconBig=" + hIconBig.ToString("X") + " hIconSmall=" + hIconSmall.ToString("X") +  "\r\n");
         }
 
         bool IDMSConnector.MenuGetItemState(int menuItemId, string docId) => true;
@@ -235,20 +234,12 @@ namespace PPDF.TotalAgility.Connector
                 profile.Variables ?? new List<TAInputVariable>();
 
             // ── Step 6: Show LoadingForm ───────────────────────────────
-            LoadingForm loadingForm = null;
-            Thread loadingThread = new Thread(() =>
-            {
-                loadingForm = new LoadingForm();
-                Application.Run(loadingForm);
-            });
-            loadingThread.SetApartmentState(ApartmentState.STA);
-            loadingThread.Start();
+            // Start() returns once the form is on screen, so it can always be closed again,
+            // even when the API call below fails straight away.
+            var loadingHost = new LoadingFormHost();
+            loadingHost.Start();
 
             // ── Step 7: Authenticate and call TotalAgility API ────────
-            // TEST DELAY — 5 seconds to verify LoadingForm animation
-            // Remove this Thread.Sleep before production release
-            Thread.Sleep(5000);
-
             TAJobResult jobResult = null;
             try
             {
@@ -343,17 +334,8 @@ namespace PPDF.TotalAgility.Connector
             });
             resultThread.SetApartmentState(ApartmentState.STA);
 
-            try
-            {
-                resultThread.Start();
-                if (loadingForm != null && loadingForm.InvokeRequired)
-                    loadingForm.Invoke(new Action(() => loadingForm.Close()));
-                else if (loadingForm != null)
-                    loadingForm.Close();
-            }
-            catch { }
-
-            loadingThread.Join();
+            resultThread.Start();
+            loadingHost.Close();
             resultThread.Join();
 
             // ── Step 9: Restore focus to Power PDF ────────────────────

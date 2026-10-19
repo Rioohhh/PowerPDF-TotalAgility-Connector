@@ -320,9 +320,8 @@ namespace PPDF.TotalAgility.Connector
                                         .ExecuteScriptAsync(script);
                                     result = result?.Trim('"');
 
-                                    System.IO.File.AppendAllText(
-                                        @"C:\Temp\TAConnectorDebug.txt",
-                                        DateTime.Now + " | SessionId result: " + result + "\r\n");
+                                    DebugLog.Write("Federated logon", "Session id read from browser: " +
+                                        (string.IsNullOrEmpty(result) || result == "null" ? "no" : "yes"));
 
                                     if (!string.IsNullOrEmpty(result) &&
                                         result != "null" && result != "")
@@ -334,9 +333,7 @@ namespace PPDF.TotalAgility.Connector
                                 }
                                 catch (Exception ex)
                                 {
-                                    System.IO.File.AppendAllText(
-                                        @"C:\Temp\TAConnectorDebug.txt",
-                                        DateTime.Now + " | Script error: " + ex.Message + "\r\n");
+                                    DebugLog.Write("Federated logon", "Script error: " + ex.Message);
                                 }
                             }
                         };
@@ -349,7 +346,8 @@ namespace PPDF.TotalAgility.Connector
             fedThread.SetApartmentState(System.Threading.ApartmentState.STA);
             fedThread.Start();
             fedThread.Join();
-            System.IO.File.AppendAllText(@"C:\Temp\TAConnectorDebug.txt", DateTime.Now + " | After Join — sessionId: " + (sessionId ?? "NULL") + "\r\n");
+            DebugLog.Write("Federated logon", "Browser closed, session id " +
+                (string.IsNullOrEmpty(sessionId) ? "not received" : "received"));
 
             if (string.IsNullOrEmpty(sessionId))
                 throw new Exception(

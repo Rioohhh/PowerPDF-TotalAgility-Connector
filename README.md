@@ -228,7 +228,7 @@ The dialog is only skipped when there is exactly one connection with exactly one
 | Wrong environment in the Send dialog | Choose the right one in the **Environment** dropdown in the options and click **Save** |
 | Newtonsoft.Json not found | Copy `Newtonsoft.Json.dll` to the Connectors folder |
 | Install script says Power PDF is running | Close Power PDF (check Task Manager for `PowerPDF.exe`) and run it again |
-| Debug log | `C:\Temp\TAConnectorDebug.txt` (the folder must exist) |
+| Debug log | `C:\Temp\TAConnectorDebug.txt` (created automatically). It contains no passwords, user names or session ids |
 
 ---
 

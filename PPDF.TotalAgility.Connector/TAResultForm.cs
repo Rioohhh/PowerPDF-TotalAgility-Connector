@@ -31,7 +31,7 @@ namespace PPDF.TotalAgility.Connector
             if (result.Success)
                 ShowSuccess(result);
             else
-                ShowError(result.ErrorMessage ?? "An unknown error occurred.");
+                ShowError(result.ErrorMessage ?? "An unknown error occurred.", result.ProcessName);
         }
 
         // ── Success ───────────────────────────────────────────────────────
@@ -57,14 +57,17 @@ namespace PPDF.TotalAgility.Connector
 
         // ── Error ─────────────────────────────────────────────────────────
 
-        private void ShowError(string message)
+        private void ShowError(string message, string processLabel = null)
         {
             panelHeader.BackColor = Color.FromArgb(180, 30, 30);
             lblHeader.Text = "Submission Failed";
             lblHeader.ForeColor = Color.White;
             pictureBoxStatus.Image = Resources.Resources.Alert_triangle;
 
-            txtErrorMessage.Text = message;
+            // Name the process and environment, so it is clear where the PDF was meant to go
+            txtErrorMessage.Text = string.IsNullOrEmpty(processLabel)
+                ? message
+                : "Process: " + processLabel + "\r\n\r\n" + message;
 
             panelDetail.Visible = false;
             panelError.Visible = true;
